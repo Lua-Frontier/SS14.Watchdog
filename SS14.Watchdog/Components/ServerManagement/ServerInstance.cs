@@ -293,7 +293,10 @@ namespace SS14.Watchdog.Components.ServerManagement
             if (_runningServer == null)
                 return;
 
-            _notificationManager.SendNotification($"Server `{Key}` timed and will be killed. Check server logs for possible causes.");
+            var interrupted = TryTakeInterruptedSave(out var saveReason, out var saveElapsed);
+            _notificationManager.SendNotification(interrupted
+                ? $"Server `{Key}` timed out during world save '{saveReason}' ({(int) saveElapsed.TotalSeconds}s) and will be killed. Unsaved progress is lost."
+                : $"Server `{Key}` timed and will be killed. Check server logs for possible causes.");
 
             if (_instanceConfig.DumpOnTimeout)
             {
@@ -376,43 +379,93 @@ namespace SS14.Watchdog.Components.ServerManagement
 
             try
             {
-                var shutdownCts = CancellationTokenSource.CreateLinkedTokenSource(cancel);
+                using var shutdownCts = CancellationTokenSource.CreateLinkedTokenSource(cancel);
                 // Give it 5 seconds to respond.
                 shutdownCts.CancelAfter(5000);
                 await SendShutdownNotificationAsync(shutdownCts.Token);
             }
             catch (HttpRequestException e)
             {
-                _logger.LogInformation(e, "Exception sending shutdown notification to server. Killing.");
-                await proc.Kill();
-                return;
+                if (!IsSaveHoldingProcess(out _))
+                {
+                    _logger.LogInformation(e, "Exception sending shutdown notification to server. Killing.");
+                    await proc.Kill();
+                    return;
+                }
+
+                _logger.LogWarning(e, "{Key}: could not send shutdown notification, but a world save is running. Waiting for it", Key);
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (!cancel.IsCancellationRequested)
             {
-                _logger.LogInformation("Timeout sending shutdown notification to server. Killing.");
-                await proc.Kill();
-                return;
+                if (!IsSaveHoldingProcess(out _))
+                {
+                    _logger.LogInformation("Timeout sending shutdown notification to server. Killing.");
+                    await proc.Kill();
+                    return;
+                }
+
+                _logger.LogWarning("{Key}: timeout sending shutdown notification, but a world save is running. Waiting for it", Key);
             }
 
-            _logger.LogDebug("{Key} sent shutdown notification to server. Waiting for exit", Key);
+            _logger.LogInformation("{Key} asked to shut down. Waiting up to {Timeout}s for it to save and exit",
+                Key, _instanceConfig.ShutdownTimeoutSeconds);
 
-            // Give it 5 seconds to shut down.
-            var waitCts = CancellationTokenSource.CreateLinkedTokenSource(cancel);
-            waitCts.CancelAfter(5000);
-            ProcessExitStatus? status;
-            try
-            {
-                await proc.WaitForExitAsync(cancel);
-                status = await proc.GetExitStatusAsync();
-            }
-            catch (OperationCanceledException)
-            {
-                _logger.LogInformation("{Key} did not gracefully shut down in time, killing", Key);
-                await proc.Kill();
+            if (!await WaitForGracefulExitAsync(proc, cancel))
                 return;
-            }
 
+            var status = await proc.GetExitStatusAsync();
             _logger.LogInformation("{Key} shut down gracefully ({Status})", Key, status);
+        }
+
+        /// <summary>
+        /// Waits for <paramref name="proc"/> to exit for <see cref="InstanceConfiguration.ShutdownTimeoutSeconds"/>,
+        /// longer while it reports a running world save. Kills it when neither holds. False when it had to be killed.
+        /// </summary>
+        private async Task<bool> WaitForGracefulExitAsync(IProcessHandle proc, CancellationToken cancel)
+        {
+            var started = DateTime.Now;
+            var deadline = started + TimeSpan.FromSeconds(_instanceConfig.ShutdownTimeoutSeconds);
+            var nextReport = started + TimeSpan.FromSeconds(30);
+
+            while (true)
+            {
+                using (var waitCts = CancellationTokenSource.CreateLinkedTokenSource(cancel))
+                {
+                    waitCts.CancelAfter(TimeSpan.FromSeconds(5));
+                    try
+                    {
+                        await proc.WaitForExitAsync(waitCts.Token);
+                        return true;
+                    }
+                    catch (OperationCanceledException) when (!cancel.IsCancellationRequested)
+                    {
+                    }
+                }
+
+                var now = DateTime.Now;
+                var saving = IsSaveHoldingProcess(out var saveElapsed);
+                if (now >= nextReport)
+                {
+                    nextReport = now + TimeSpan.FromSeconds(30);
+                    _logger.LogInformation(
+                        saving
+                            ? "{Key}: still shutting down after {Elapsed:0}s, world save running for {Save:0}s"
+                            : "{Key}: still shutting down after {Elapsed:0}s",
+                        Key, (now - started).TotalSeconds, saveElapsed.TotalSeconds);
+                }
+
+                if (now < deadline || saving)
+                    continue;
+
+                var interrupted = TryTakeInterruptedSave(out var reason, out _);
+                _logger.LogError("{Key} did not shut down within {Elapsed:0}s, killing{Save}",
+                    Key, (now - started).TotalSeconds, interrupted ? $" (world save '{reason}' never finished)" : "");
+                _notificationManager.SendNotification(interrupted
+                    ? $"Server `{Key}` was killed during shutdown: world save '{reason}' did not finish. Unsaved progress is lost."
+                    : $"Server `{Key}` did not shut down within {(int) (now - started).TotalSeconds}s and was killed.");
+                await proc.Kill();
+                return false;
+            }
         }
 
         public async Task SendShutdownNotificationAsync(CancellationToken cancel = default)

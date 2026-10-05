@@ -221,6 +221,14 @@ public sealed partial class ServerInstance
             return;
         }
 
+        if (IsSaveHoldingProcess(out var saveElapsed))
+        {
+            _logger.LogWarning("{Key}: missed ping, but a world save has been running for {Elapsed:0}s; not killing",
+                Key, saveElapsed.TotalSeconds);
+            StartTimeoutTimer();
+            return;
+        }
+
         await TimeoutKill();
         return;
     }
@@ -249,6 +257,14 @@ public sealed partial class ServerInstance
             // and we already started a new one. So ignore this!
 
             return;
+        }
+
+        if (TryTakeInterruptedSave(out var saveReason, out var saveElapsed))
+        {
+            _logger.LogError("{Key} exited during world save '{Reason}' after {Elapsed:0}s; that save did not finish",
+                Key, saveReason, saveElapsed.TotalSeconds);
+            _notificationManager.SendNotification(
+                $"Server `{Key}` exited during world save '{saveReason}'. That save did not finish; check server logs.");
         }
 
         if (!exit.ExitStatus.IsClean)
@@ -311,6 +327,7 @@ public sealed partial class ServerInstance
         }
 
         GenerateNewToken();
+        TryTakeInterruptedSave(out _, out _);
 
         {
             using var con = _dataManager.OpenConnection();

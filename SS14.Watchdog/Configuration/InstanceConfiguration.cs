@@ -42,6 +42,12 @@ namespace SS14.Watchdog.Configuration
         /// </summary>
         public int TimeoutSeconds { get; set; } = 90;
 
+        public int ShutdownTimeoutSeconds { get; set; } = 300;
+
+        public int SaveTimeoutSeconds { get; set; } = 900;
+
+        public int SaveProgressTimeoutSeconds { get; set; } = 60;
+
         /// <summary>
         /// Any additional environment variables for the server process.
         /// </summary>

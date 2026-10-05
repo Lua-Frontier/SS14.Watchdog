@@ -41,6 +41,8 @@ namespace SS14.Watchdog.Components.ServerManagement
         /// </summary>
         Task PingReceived();
 
+        Task SaveStateReceived(ServerSaveState state, bool ok, string? reason);
+
         /// <summary>
         ///     Check for update and inform game server of available update if there is one.
         /// </summary>
@@ -86,5 +88,12 @@ namespace SS14.Watchdog.Components.ServerManagement
     {
         Unknown,
         Maintenance,
+    }
+
+    public enum ServerSaveState
+    {
+        Begin,
+        Progress,
+        End,
     }
 }

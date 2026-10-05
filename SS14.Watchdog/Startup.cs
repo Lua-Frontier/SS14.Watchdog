@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Runtime;
 using JetBrains.Annotations;
 using Microsoft.AspNetCore.Builder;
@@ -34,6 +35,14 @@ namespace SS14.Watchdog
             services.Configure<DataOptions>(Configuration.GetSection(DataOptions.Position));
             services.Configure<NotificationOptions>(Configuration.GetSection(NotificationOptions.Position));
             services.Configure<ServersConfiguration>(Configuration.GetSection("Servers"));
+
+            var servers = new ServersConfiguration();
+            Configuration.GetSection("Servers").Bind(servers);
+            var longestStop = servers.Instances.Values
+                .Select(i => Math.Max(i.ShutdownTimeoutSeconds, i.SaveTimeoutSeconds))
+                .DefaultIfEmpty(30)
+                .Max();
+            services.Configure<HostOptions>(o => o.ShutdownTimeout = TimeSpan.FromSeconds(longestStop + 60));
 
             services.AddSingleton<DataManager>();
             services.AddHostedService(p => p.GetService<DataManager>()!);

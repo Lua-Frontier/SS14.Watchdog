@@ -1,3 +1,4 @@
+using System;
 using System.Diagnostics.CodeAnalysis;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
@@ -30,6 +31,33 @@ namespace SS14.Watchdog.Controllers
 
             await instance.PingReceived();
             return Ok();
+        }
+
+        [HttpPost("save")]
+        public async Task<IActionResult> SaveAsync(
+            [FromHeader(Name = "Authorization")] string authorization,
+            string key,
+            [FromBody] SaveStateParameters parameters)
+        {
+            if (!TryAuthorize(authorization, key, out var failure, out var instance))
+            {
+                return failure;
+            }
+
+            if (!Enum.TryParse<ServerSaveState>(parameters.State, ignoreCase: true, out var state))
+            {
+                return BadRequest();
+            }
+
+            await instance.SaveStateReceived(state, parameters.Ok, parameters.Reason);
+            return Ok();
+        }
+
+        public sealed class SaveStateParameters
+        {
+            public string State { get; set; } = "";
+            public bool Ok { get; set; } = true;
+            public string? Reason { get; set; }
         }
 
         [NonAction]
